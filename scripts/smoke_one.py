@@ -44,7 +44,7 @@ total = time.perf_counter() - start
 print("REPLY:", "".join(answer))
 print(f"total: {total:.3f}s | chunks: {chunks}")
 print("FIELDS THAT CARRIED DATA (first seen at, total chars):")
-for field in first_seen:
-    print(f"  {field}: {first_seen[field]:.3f}s, {chars[field]} chars")
+for field, seen_at in first_seen.items():
+    print(f"  {field}: {seen_at:.3f}s, {chars[field]} chars")
 print("RAW USAGE:")
 print(json.dumps(usage.model_dump(), indent=2) if usage else "NO USAGE RETURNED")

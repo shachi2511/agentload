@@ -44,5 +44,5 @@ for label, extra in SETTINGS:
     blocks = getattr(p, "cache_write_blocks", None)
     in_rate = cd["input"] / u.prompt_tokens * 1e6
     wr_rate = cd["cache_write"] / p.cache_write_tokens * 1e6 if p.cache_write_tokens else 0.0
-    print(f"{label:<16} {u.prompt_tokens:>6} {p.cache_write_tokens:>6} {str(billable):>8} "
-          f"{str(blocks):>6} {in_rate:>9.4f} {wr_rate:>9.4f}")
+    print(f"{label:<16} {u.prompt_tokens:>6} {p.cache_write_tokens:>6} {billable!s:>8} "
+          f"{blocks!s:>6} {in_rate:>9.4f} {wr_rate:>9.4f}")
