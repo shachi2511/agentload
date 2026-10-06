@@ -12,7 +12,7 @@ permissions:
 jobs:
   # 1. Lint + all unit tests + the end-to-end test against the fake server.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false   # report both Python versions even if one fails
       matrix:
@@ -34,7 +34,7 @@ jobs:
 
   # 2. Alert rules: syntax check + unit test, using the same Prometheus version as the stack.
   alert-rules:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: promtool check + test
@@ -50,7 +50,7 @@ jobs:
   #    scenario against the fake server, Prometheus scrapes it, Grafana loads the dashboard,
   #    and the pricing check + report run on the resulting log.
   stack-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [test, alert-rules]
     env:
       AGENTLOAD_BASE_URL: http://127.0.0.1:8099/v1
@@ -71,15 +71,22 @@ jobs:
           for i in $(seq 1 30); do curl -sf localhost:9090/-/ready && break; sleep 2; done
           for i in $(seq 1 30); do curl -sf localhost:3000/api/health && break; sleep 2; done
       - name: Alert rules loaded in Prometheus
+        # Rules report health "unknown" until their first evaluation (every 5s), so retry.
         run: |
-          curl -s localhost:9090/api/v1/rules | python -c "
+          for i in $(seq 1 30); do
+            curl -s localhost:9090/api/v1/rules > rules.json
+            if python -c "
           import json, sys
-          rules = [r for g in json.load(sys.stdin)['data']['groups'] for r in g['rules']]
-          names = {r['name']: r['health'] for r in rules}
-          print(names)
-          assert names.get('AgentLoadCacheReuseLow') == 'ok', names
-          assert names.get('agentload:cache_reuse:ratio_1m') == 'ok', names
-          "
+          rules = [r for g in json.load(open('rules.json'))['data']['groups'] for r in g['rules']]
+          health = {r['name']: r['health'] for r in rules}
+          print(health)
+          ok = (health.get('AgentLoadCacheReuseLow') == 'ok'
+                and health.get('agentload:cache_reuse:ratio_1m') == 'ok')
+          sys.exit(0 if ok else 1)
+          "; then exit 0; fi
+            sleep 2
+          done
+          echo "alert rules never became healthy"; exit 1
       - name: Grafana provisioned the AgentLoad dashboard
         run: |
           curl -s 'localhost:3000/api/search?query=AgentLoad' | python -c "
