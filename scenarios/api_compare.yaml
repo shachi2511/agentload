@@ -1,0 +1,28 @@
+name: api_compare
+mode: api_compare
+description: >
+  H4. The same 12-turn agent loop through Chat Completions (full history re-sent each turn)
+  and the Responses API (server keeps history via previous_response_id). Also checks whether
+  Responses honors the 10-minute TTL and retention "off", and whether sending instructions
+  only on turn 1 breaks the cache on turn 2.
+model: glm-5.3-flash-fast
+turns: 12
+tool_tokens: [1000, 3000]
+max_tokens: 1500
+budget_usd: 0.5
+variants:
+  - name: chat_ttl10m
+    api: chat
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: responses_ttl10m
+    api: responses
+    repeat_instructions: true
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: responses_ttl10m_instr_once
+    api: responses
+    repeat_instructions: false
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: responses_off
+    api: responses
+    repeat_instructions: true
+    extra_body: {prompt_cache_retention: "off"}

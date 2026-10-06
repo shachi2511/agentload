@@ -1,0 +1,22 @@
+name: early_edit
+mode: sequential
+description: >
+  H2(c). 20-turn agent loop, 3 variants. control: no edits. early_edit: at turn 11 the first
+  tool output (message 1, near the start) is changed, so everything after it no longer matches
+  the cache. system_timestamp: the system prompt carries a clock that changes every turn,
+  a common agent bug that breaks the cache on every request.
+model: glm-5.3-flash-fast
+turns: 20
+tool_tokens: [1000, 4000]
+max_tokens: 1000
+budget_usd: 1.0
+variants:
+  - name: control
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: early_edit
+    edit_at_turn: 11
+    edit_message_index: 1
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: system_timestamp
+    system_timestamp: true
+    extra_body: {prompt_cache_options: {ttl: "10m"}}

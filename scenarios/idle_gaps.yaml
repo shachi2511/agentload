@@ -1,0 +1,36 @@
+name: idle_gaps
+mode: idle_gaps
+description: >
+  H2(a). Each probe writes a ~10K-token prompt, waits, then re-sends it to see if it is still
+  cached. Tests whether a 10-minute block expires, whether a cache hit resets the clock,
+  how long the default lasts, whether a 60m TTL outlives 30 minutes, and how long
+  retention "off" keeps free re-reads. One check per probe: first observations, not proof.
+model: glm-5.3-flash-fast
+max_tokens: 300
+budget_usd: 0.5
+prompt_tokens: 10000
+probes:
+  - name: ttl10m_5m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+    checks_min: [5]
+  - name: ttl10m_12m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+    checks_min: [12]
+  - name: ttl10m_refresh
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+    checks_min: [8, 16]
+  - name: default_12m
+    extra_body: {}
+    checks_min: [12]
+  - name: default_35m
+    extra_body: {}
+    checks_min: [35]
+  - name: ttl60m_35m
+    extra_body: {prompt_cache_options: {ttl: "60m"}}
+    checks_min: [35]
+  - name: off_2m
+    extra_body: {prompt_cache_retention: "off"}
+    checks_min: [2]
+  - name: off_12m
+    extra_body: {prompt_cache_retention: "off"}
+    checks_min: [12]

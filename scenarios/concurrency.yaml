@@ -1,0 +1,18 @@
+name: concurrency
+mode: concurrency
+description: >
+  H5. Per-stream output speed at 1, 2, 4 and 8 parallel streams (never more than 8),
+  3 rounds per level, on GLM 5.3 Flash and DeepSeek V4.1 Flash (the model behind Coral's
+  469 tokens/sec claim). Short unique prompts and long answers, so generation speed dominates.
+max_tokens: 1500
+budget_usd: 1.0
+levels: [1, 2, 4, 8]
+rounds: 3
+pause_s: 2
+variants:
+  - name: glm_flash
+    model: glm-5.3-flash-fast
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: deepseek_flash
+    model: deepseek-v4.1-flash-fast
+    extra_body: {prompt_cache_options: {ttl: "10m"}}

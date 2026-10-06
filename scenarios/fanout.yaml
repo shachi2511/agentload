@@ -1,0 +1,31 @@
+name: fanout
+mode: fanout
+description: >
+  H2(b). A ~30K-token repository context is handed to 4 parallel sub-agents, each running
+  3 turns of its own task. shared_warm: the main agent caches the context first.
+  shared_cold: 4 sub-agents start at the same moment with the same context, nothing cached.
+  distinct: each sub-agent gets a different prefix (control: no sharing possible).
+model: glm-5.3-flash-fast
+max_tokens: 500
+budget_usd: 1.0
+prefix_tokens: 30000
+children: 4
+child_turns: 3
+task_tokens: 2000
+repeats: 2
+variants:
+  - name: shared_warm
+    prefix: shared_warm
+    extra_body:
+      prompt_cache_options:
+        ttl: "10m"
+  - name: shared_cold
+    prefix: shared_cold
+    extra_body:
+      prompt_cache_options:
+        ttl: "10m"
+  - name: distinct
+    prefix: distinct
+    extra_body:
+      prompt_cache_options:
+        ttl: "10m"

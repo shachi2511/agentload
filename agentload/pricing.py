@@ -1,8 +1,8 @@
-"""Coral list prices (USD per 1M tokens) and a worst-case cost estimate for budget holds.
+"""Coral list prices (USD per 1M tokens) and worst-case cost estimates for budget holds.
 
-GLM 5.3 Flash cache-write ($0.23, default retention) and output ($0.50) were measured in
-Phase 1 on 2026-10-05. Other rates come from Coral's docs as recorded in the project notes.
-Re-check before citing. Phase 4 extends this module.
+GLM 5.3 Flash cache-write ($0.23, default retention) and output ($0.50) measured in Phase 1;
+DeepSeek V4.1 Flash output ($1.20) measured in Phase 3.7. Other rates come from Coral's docs
+as recorded in the project notes. Re-check before citing. Phase 4 extends this module.
 """
 from __future__ import annotations
 
@@ -27,19 +27,27 @@ PRICES: dict[str, ModelPrice] = {
     ),
 }
 
-# Phase 1 measured ~3.4 characters per token on our synthetic logs. Assuming 2.0
+# Phases 1-3 measured 2.0-3.4 characters per token on our synthetic text. Assuming 1.5
 # over-counts tokens, so the budget hold is always bigger than the real cost.
-CHARS_PER_TOKEN_FLOOR = 2.0
+CHARS_PER_TOKEN_FLOOR = 1.5
+
+
+def _price(model: str) -> ModelPrice:
+    if model not in PRICES:
+        raise ValueError(f"no price for model {model!r}; add it to PRICES before running")
+    return PRICES[model]
 
 
 def estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
     return int(len(json.dumps(messages)) / CHARS_PER_TOKEN_FLOOR) + 1
 
 
+def worst_case_cost_for_chars(model: str, prompt_chars: int, max_tokens: int) -> float:
+    """Upper bound: every prompt token at the dearest input rate, plus a full-length reply."""
+    price = _price(model)
+    tokens = int(prompt_chars / CHARS_PER_TOKEN_FLOOR) + 1
+    return (tokens * max(price.input, price.cache_write) + max_tokens * price.output) / 1e6
+
+
 def worst_case_cost(model: str, messages: list[dict[str, Any]], max_tokens: int) -> float:
-    """Upper bound: every prompt token billed at the dearest input rate, plus a full-length reply."""
-    if model not in PRICES:
-        raise ValueError(f"no price for model {model!r}; add it to PRICES before running")
-    price = PRICES[model]
-    in_rate = max(price.input, price.cache_write)
-    return (estimate_prompt_tokens(messages) * in_rate + max_tokens * price.output) / 1e6
+    return worst_case_cost_for_chars(model, len(json.dumps(messages)), max_tokens)

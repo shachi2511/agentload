@@ -144,3 +144,71 @@ def test_backoff_is_capped(tmp_path):
     client, _ = make_client(tmp_path)
     client._rand = lambda: 1.0
     assert client._backoff(10, make_429()) == client.max_backoff_s
+
+
+def test_records_chunk_timing_for_burst_detection(tmp_path):
+    chunks = [chunk(reasoning="a"), chunk(reasoning="b"), chunk(content="c"),
+              chunk(usage=USAGE)]
+    client, _ = make_client(tmp_path, chunks)
+    r = asyncio.run(client.chat(MESSAGES))
+    assert r.text_chunks == 3
+    assert r.last_token_s is not None and r.last_token_s >= r.ttft_s
+    assert r.max_gap_s >= 0.0
+
+
+RUSAGE = NS(
+    input_tokens=7042, output_tokens=113,
+    input_tokens_details=NS(cached_tokens=7040, cache_write_tokens=2,
+                            billable_cache_write_tokens=2),
+    output_tokens_details=NS(reasoning_tokens=59), cost=0.001,
+    cost_details={"currency": "USD", "input": 0.0, "cached_input": 0.0,
+                  "cache_write": 5e-07, "output": 5.65e-05},
+)
+
+
+def make_response_client(tmp_path, events, run_cap=5.0):
+    client, budget = make_client(tmp_path, run_cap=run_cap)
+    client.response_calls = []
+
+    async def fake_create_response(**kwargs):
+        client.response_calls.append(kwargs)
+
+        async def gen():
+            for e in events:
+                yield e
+
+        return gen()
+
+    client._create_response = fake_create_response
+    return client, budget
+
+
+def test_respond_streams_text_and_maps_usage(tmp_path):
+    events = [NS(type="response.created"),
+              NS(type="response.output_text.delta", delta="Hel"),
+              NS(type="response.output_text.delta", delta="lo"),
+              NS(type="response.completed",
+                 response=NS(id="resp_1", output_text="Hello", usage=RUSAGE))]
+    client, budget = make_response_client(tmp_path, events)
+    r = asyncio.run(client.respond("new tool output", history_chars=20000,
+                                   instructions="be brief", previous_response_id="resp_0"))
+    assert r.error is None and r.api == "responses" and r.response_id == "resp_1"
+    assert r.output_text == "Hello" and r.first_content_s is not None
+    assert r.prompt_tokens == 7042 and r.cached_tokens == 7040 and r.reasoning_tokens == 59
+    assert budget.run_spent == pytest.approx(0.001)
+    sent = client.response_calls[0]
+    assert sent["previous_response_id"] == "resp_0" and sent["instructions"] == "be brief"
+    assert sent["stream"] is True and r.request_chars < 200
+
+
+def test_respond_without_final_event_is_an_error(tmp_path):
+    client, budget = make_response_client(tmp_path, [NS(type="response.created")])
+    r = asyncio.run(client.respond("x", history_chars=10))
+    assert "final response" in r.error and budget.run_spent > 0
+
+
+def test_respond_hold_covers_server_side_history(tmp_path):
+    client, _ = make_response_client(tmp_path, [], run_cap=1.0)
+    with pytest.raises(BudgetExceeded):
+        asyncio.run(client.respond("tiny", history_chars=10_000_000))
+    assert client.response_calls == []

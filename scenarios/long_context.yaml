@@ -1,0 +1,18 @@
+name: long_context
+mode: long_context
+description: >
+  H3. At 100K, 250K and 500K tokens: a cold (never-seen) prompt, the same prompt warm 5s later,
+  then warm plus a 2K-token append (the realistic agent case). 3 repeats with fresh prompts.
+  Uses a 10-minute TTL: the sequential run showed it changes cost but not cache behavior or TTFT.
+model: glm-5.3-flash-fast
+max_tokens: 500
+budget_usd: 1.5
+context_sizes: [100000, 250000, 500000]
+repeats: 3
+warm_delay_s: 5
+append_tokens: 2000
+variants:
+  - name: ttl10m
+    extra_body:
+      prompt_cache_options:
+        ttl: "10m"

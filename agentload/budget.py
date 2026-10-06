@@ -19,7 +19,7 @@ class BudgetExceeded(RuntimeError):
 @dataclass
 class BudgetGuard:
     run_cap_usd: float = 5.0
-    total_cap_usd: float = 20.0
+    total_cap_usd: float = 5.0
     ledger_path: Path = Path("results/spend_ledger.json")
     run_spent: float = 0.0
     _reserved: float = 0.0
