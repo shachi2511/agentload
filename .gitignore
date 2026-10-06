@@ -7,3 +7,4 @@ results/*
 !results/.gitkeep
 .pytest_cache/
 .ruff_cache/
+.DS_Store
