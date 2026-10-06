@@ -1,0 +1,124 @@
+# AgentLoad CI: runs on every push and pull request. Never calls Coral, never needs a key,
+# never spends money. Everything runs against tests/mock_server.py (a fake Coral).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # 1. Lint + all unit tests + the end-to-end test against the fake server.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: python -m ruff check .
+      - run: python -m pytest -q
+      - name: No API keys in the repo
+        run: |
+          if grep -rnE "cb_[A-Za-z0-9]{8,}" --exclude-dir=.git .; then
+            echo "Possible Coral key committed"; exit 1
+          fi
+
+  # 2. Alert rules: syntax check + unit test, using the same Prometheus version as the stack.
+  alert-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool check + test
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w --entrypoint promtool prom/prometheus:v3.15.0 \
+            check rules alerts/cache_health.yml
+          docker run --rm -v "$PWD:/w" -w /w --entrypoint promtool prom/prometheus:v3.15.0 \
+            test rules alerts/tests/cache_health_test.yml
+          docker run --rm -v "$PWD:/w" -w /w --entrypoint promtool prom/prometheus:v3.15.0 \
+            check config prometheus/prometheus.local.yml
+
+  # 3. The whole thing as a user would run it: Docker Compose stack up, the CLI runs a
+  #    scenario against the fake server, Prometheus scrapes it, Grafana loads the dashboard,
+  #    and the pricing check + report run on the resulting log.
+  stack-smoke:
+    runs-on: ubuntu-latest
+    needs: [test, alert-rules]
+    env:
+      AGENTLOAD_BASE_URL: http://127.0.0.1:8099/v1
+      CORAL_API_KEY: ci-not-a-real-key
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Start Prometheus + Grafana (docker compose)
+        run: docker compose up -d
+      - name: Wait for Prometheus and Grafana
+        run: |
+          for i in $(seq 1 30); do curl -sf localhost:9090/-/ready && break; sleep 2; done
+          for i in $(seq 1 30); do curl -sf localhost:3000/api/health && break; sleep 2; done
+      - name: Alert rules loaded in Prometheus
+        run: |
+          curl -s localhost:9090/api/v1/rules | python -c "
+          import json, sys
+          rules = [r for g in json.load(sys.stdin)['data']['groups'] for r in g['rules']]
+          names = {r['name']: r['health'] for r in rules}
+          print(names)
+          assert names.get('AgentLoadCacheReuseLow') == 'ok', names
+          assert names.get('agentload:cache_reuse:ratio_1m') == 'ok', names
+          "
+      - name: Grafana provisioned the AgentLoad dashboard
+        run: |
+          curl -s 'localhost:3000/api/search?query=AgentLoad' | python -c "
+          import json, sys
+          uids = [d.get('uid') for d in json.load(sys.stdin)]
+          print(uids)
+          assert 'agentload' in uids, uids
+          "
+
+      - name: Start the fake Coral server
+        run: |
+          python tests/mock_server.py --port 8099 > mock.log 2>&1 &
+          for i in $(seq 1 20); do grep -q "mock server on" mock.log && break; sleep 0.5; done
+          cat mock.log
+      - name: Run the CLI against it with live metrics
+        run: |
+          python -m agentload.runner scenarios/ci_smoke.yaml \
+            --metrics-port 9108 --warmup-s 6 --hold-s 15
+      - name: Prometheus scraped the run
+        run: |
+          curl -s 'localhost:9090/api/v1/query?query=sum(agentload_requests_total)' | python -c "
+          import json, sys
+          res = json.load(sys.stdin)['data']['result']
+          print(res)
+          assert res and float(res[0]['value'][1]) >= 1, 'no requests scraped'
+          "
+      - name: Pricing check reproduces every fake charge
+        run: python -m agentload.pricing_report validate --strict results/*.jsonl
+      - name: Build the report
+        run: python report/report.py --results results --out report/out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-smoke-report
+          path: |
+            report/out/
+            results/*.jsonl
+            mock.log
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+      - if: always()
+        run: docker compose down -v

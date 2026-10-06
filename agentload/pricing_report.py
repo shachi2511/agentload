@@ -99,6 +99,8 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("validate", help="recompute every logged charge")
     v.add_argument("paths", nargs="+")
+    v.add_argument("--strict", action="store_true",
+                   help="exit 1 if any charge mismatches or nothing was checked (for CI)")
     c = sub.add_parser("compare", help="Coral vs a cached-reads-at-a-discount rule")
     c.add_argument("path")
     c.add_argument("--read-fraction", type=float, default=0.10)
@@ -113,6 +115,8 @@ def main(argv: list[str] | None = None) -> None:
               f"worst difference: ${s['worst_abs_diff']:.10f}")
         for line in s["mismatches"]:
             print("  MISMATCH", line)
+        if args.strict and (s["mismatches"] or s["checked"] == 0):
+            raise SystemExit(1)
         return
 
     model = DiscountModel(read_fraction=args.read_fraction,

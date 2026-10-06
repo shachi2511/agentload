@@ -134,13 +134,15 @@ class AgentLoadClient:
     def __init__(
         self,
         budget: BudgetGuard,
-        base_url: str = CORAL_BASE_URL,
+        base_url: str | None = None,
         api_key: str | None = None,
         timeout_s: float = 300.0,
         max_attempts: int = 5,
         base_backoff_s: float = 1.0,
         max_backoff_s: float = 30.0,
     ) -> None:
+        # AGENTLOAD_BASE_URL lets tests/CI point at a fake server; default is Coral.
+        base_url = base_url or os.environ.get("AGENTLOAD_BASE_URL") or CORAL_BASE_URL
         key = api_key or os.environ.get("CORAL_API_KEY")
         if not key:
             raise RuntimeError("CORAL_API_KEY is not set")

@@ -1,0 +1,15 @@
+name: ci_smoke
+mode: sequential
+description: >
+  Phase 8. Tiny 4-turn loop for CI, run against the fake server in tests/mock_server.py
+  (AGENTLOAD_BASE_URL). Never sent to the real API.
+model: glm-5.3-flash-fast
+turns: 4
+tool_tokens: [300, 400]
+max_tokens: 50
+budget_usd: 0.05
+variants:
+  - name: ttl10m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: default
+    extra_body: {}
