@@ -7,7 +7,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": true,
   "refresh": "5s",
   "time": {
@@ -40,7 +40,7 @@
       "gridPos": {
         "x": 0,
         "y": 1,
-        "w": 8,
+        "w": 6,
         "h": 4
       },
       "targets": [
@@ -84,9 +84,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 8,
+        "x": 6,
         "y": 1,
-        "w": 8,
+        "w": 6,
         "h": 4
       },
       "targets": [
@@ -130,9 +130,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 16,
+        "x": 12,
         "y": 1,
-        "w": 8,
+        "w": 6,
         "h": 4
       },
       "targets": [
@@ -162,6 +162,75 @@
           "values": false
         },
         "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Cache-health alert",
+      "description": "AgentLoadCacheReuseLow (alerts/cache_health.yml). Runbook: docs/runbooks/cache_health.md",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(ALERTS{alertname=\"AgentLoadCacheReuseLow\", alertstate=\"firing\"}) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OK",
+                  "index": 0
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
         "graphMode": "none",
         "textMode": "auto"
       }

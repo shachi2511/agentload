@@ -1,0 +1,55 @@
+# Unit test for alerts/cache_health.yml (no live data, no spend). Kept in alerts/tests/ so
+# Prometheus (which loads alerts/*.yml) does not try to load it as a rule file:
+#   promtool test rules alerts/tests/cache_health_test.yml
+# One request every 5s per scenario. Reuse per request: healthy = 1.0, broken = 0.005,
+# early_edit = 1.0 except a single 0.0 turn at t=105s.
+rule_files:
+  - ../cache_health.yml
+
+evaluation_interval: 5s
+
+tests:
+  - interval: 5s
+    input_series:
+      - series: 'agentload_cache_reuse_ratio_sum{scenario="demo/healthy",model="m",api="chat"}'
+        values: '0+1x41'
+      - series: 'agentload_cache_reuse_ratio_count{scenario="demo/healthy",model="m",api="chat"}'
+        values: '0+1x41'
+      - series: 'agentload_cache_reuse_ratio_sum{scenario="demo/broken",model="m",api="chat"}'
+        values: '0+0.005x41'
+      - series: 'agentload_cache_reuse_ratio_count{scenario="demo/broken",model="m",api="chat"}'
+        values: '0+1x41'
+      - series: 'agentload_cache_reuse_ratio_sum{scenario="demo/early_edit",model="m",api="chat"}'
+        values: '0+1x20 20 21+1x19'
+      - series: 'agentload_cache_reuse_ratio_count{scenario="demo/early_edit",model="m",api="chat"}'
+        values: '0+1x41'
+
+    alert_rule_test:
+      # 20s in: the broken scenario is only "pending" (for: 30s not reached), so nothing fires.
+      - eval_time: 20s
+        alertname: AgentLoadCacheReuseLow
+        exp_alerts: []
+
+      # 2m in: the 1-minute window includes the early edit at 105s, but only the broken one fires.
+      - eval_time: 2m
+        alertname: AgentLoadCacheReuseLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scenario: demo/broken
+            exp_annotations:
+              summary: "Prompt cache reuse below 50% for demo/broken"
+              description: "Recent turns reuse less than half of the previous prompt, so most of each prompt is billed again as cache writes and time to first token rises."
+              runbook: "docs/runbooks/cache_health.md"
+
+      # 3m in: still only the broken scenario.
+      - eval_time: 3m
+        alertname: AgentLoadCacheReuseLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              scenario: demo/broken
+            exp_annotations:
+              summary: "Prompt cache reuse below 50% for demo/broken"
+              description: "Recent turns reuse less than half of the previous prompt, so most of each prompt is billed again as cache writes and time to first token rises."
+              runbook: "docs/runbooks/cache_health.md"

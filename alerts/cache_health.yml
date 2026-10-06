@@ -1,0 +1,27 @@
+# Phase 7: cache-health alert. Loaded by Prometheus from prometheus/prometheus*.yml (rule_files).
+# Unit-tested with: promtool test rules alerts/tests/cache_health_test.yml
+groups:
+  - name: agentload-cache-health
+    rules:
+      # Average cache reuse per scenario over the last minute:
+      # cached tokens / previous prompt tokens in the same conversation (1.0 = healthy).
+      - record: agentload:cache_reuse:ratio_1m
+        expr: |
+          sum by (scenario) (rate(agentload_cache_reuse_ratio_sum[1m]))
+            /
+          sum by (scenario) (rate(agentload_cache_reuse_ratio_count[1m]))
+
+      - alert: AgentLoadCacheReuseLow
+        # Below 50% averaged over at least 3 turns. One early edit (a single 0% turn among
+        # healthy ones) stays above 50% and does not alert; a prompt that changes every turn does.
+        expr: |
+          agentload:cache_reuse:ratio_1m < 0.5
+          and on (scenario)
+          sum by (scenario) (increase(agentload_cache_reuse_ratio_count[1m])) >= 3
+        for: 30s   # demo-friendly; use ~5m in production (see runbook)
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prompt cache reuse below 50% for {{ $labels.scenario }}"
+          description: "Recent turns reuse less than half of the previous prompt, so most of each prompt is billed again as cache writes and time to first token rises."
+          runbook: "docs/runbooks/cache_health.md"
