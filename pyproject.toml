@@ -1,0 +1,9 @@
+[project]
+name = "agentload"
+version = "0.1.0"
+description = "Replay realistic AI-agent workloads against OpenAI-compatible APIs and measure cost, cache health and latency."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
