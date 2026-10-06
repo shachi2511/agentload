@@ -1,0 +1,40 @@
+name: idle_followup
+mode: idle_gaps
+description: >
+  H2(a) follow-up (Phase 9). The first idle run saw a 10m block still cached at 12 and 16 min
+  and default / "60m" gone at 35 min. These probes narrow the gap: when does a 10m block really
+  expire (20 / 25 / 30 min)? Does the default (billed as 3 blocks) last ~30 min? Does "60m"
+  behave like the default? Does retention "off" keep free re-reads past 12 min?
+  One check per probe: observations, not proof.
+model: glm-5.3-flash-fast
+max_tokens: 300
+budget_usd: 0.2
+prompt_tokens: 10000
+probes:
+  - name: ttl10m_20m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+    checks_min: [20]
+  - name: ttl10m_25m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+    checks_min: [25]
+  - name: ttl10m_30m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+    checks_min: [30]
+  - name: default_20m
+    extra_body: {}
+    checks_min: [20]
+  - name: default_25m
+    extra_body: {}
+    checks_min: [25]
+  - name: default_30m
+    extra_body: {}
+    checks_min: [30]
+  - name: ttl60m_25m
+    extra_body: {prompt_cache_options: {ttl: "60m"}}
+    checks_min: [25]
+  - name: off_20m
+    extra_body: {prompt_cache_retention: "off"}
+    checks_min: [20]
+  - name: off_30m
+    extra_body: {prompt_cache_retention: "off"}
+    checks_min: [30]

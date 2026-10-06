@@ -1,7 +1,9 @@
-"""Phase 5: build charts and results.md from the JSONL logs. No API calls, $0.
+"""Phase 5 (pooled in Phase 9): charts and results.md from the JSONL logs. No API calls, $0.
 
 Run: PYTHONPATH=. python report/report.py          (writes report/out/)
 Every number in results.md is computed from the logs; nothing is typed in by hand.
+Repeat runs of the same scenario are pooled (H1, H3, H4, H5); idle_gaps + idle_followup
+are merged for H2(a). Single-run scenarios use the latest run.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from agentload.analysis import (
     Row,
     cache_reuse,
     hit_rate,
+    percentile,
     summarize,
     summarize_api_compare,
     summarize_concurrency,
@@ -34,15 +37,40 @@ SERIES = ("#2a78d6", "#eb6834", "#1baf7a")
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 STATUS = {"HIT": "#0ca30c", "PARTIAL": "#fab219", "MISS": "#d03b3b", "ERROR": "#d03b3b"}
 ORDINAL = ("#86b6ef", "#2a78d6", "#104281")  # p50, p95, p99
-SCENARIOS = ("sequential", "long_context", "fanout", "idle_gaps", "early_edit",
-             "concurrency", "api_compare")
+SCENARIOS = ("sequential", "long_context", "fanout", "idle_gaps", "idle_followup",
+             "early_edit", "concurrency", "api_compare")
 
 
 # ---------- loading ----------
 
+def all_runs(results_dir: Path, name: str) -> list[Path]:
+    """Every log of one scenario, oldest first (file names start with a timestamp)."""
+    return sorted(results_dir.glob(f"*-{name}-*.jsonl"))
+
+
 def latest_run(results_dir: Path, name: str) -> Path | None:
-    files = sorted(results_dir.glob(f"*-{name}-*.jsonl"))
+    files = all_runs(results_dir, name)
     return files[-1] if files else None
+
+
+def pooled_by_variant(paths: list[Path]) -> dict[str, list[Row]]:
+    """Rows from several runs, grouped by variant. Each row is tagged with its run, and
+    concurrency 'round' ids are made unique per run so rounds from different runs never merge."""
+    groups: dict[str, list[Row]] = defaultdict(list)
+    for path in paths:
+        for name, rows in by_variant(path).items():
+            for r in rows:
+                tags = dict(r.get("tags") or {})
+                tags["run"] = path.stem
+                if "round" in tags:
+                    tags["round"] = f"{path.stem}:{tags['round']}"
+                groups[name].append({**r, "tags": tags})
+    return dict(groups)
+
+
+def span(values: list[float], fmt: str = ".0%") -> str:
+    """'61% / 63% / 62%' style list of per-run values."""
+    return " / ".join(f"{v:{fmt}}" for v in values)
 
 
 def by_variant(path: Path) -> dict[str, list[Row]]:
@@ -111,7 +139,8 @@ def legend(ax: Any) -> None:
 
 # ---------- sections (each returns markdown lines and a scoreboard row) ----------
 
-def section_h1(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
+def section_h1(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str, str]]:
+    path = paths[-1]
     cmp = compare(path, DiscountModel())
     groups = by_variant(path)
     fig, (ax,) = new_fig()
@@ -148,10 +177,21 @@ def section_h1(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
         saving = 1 - cmp["ttl10m"]["measured_total"] / cmp["default"]["measured_total"]
         lines.append(f"- Same loop with `ttl: \"10m\"` instead of the default: "
                      f"{saving:.0%} cheaper overall **[measured]**.")
+    savings = []
+    for p in paths:
+        c = compare(p, DiscountModel())
+        if {"default", "ttl10m"} <= c.keys():
+            savings.append(1 - c["ttl10m"]["measured_total"] / c["default"]["measured_total"])
+    if len(savings) > 1:
+        lines.append(f"- Repeated {len(savings)} times: the 10m TTL saved {span(savings)} "
+                     f"per run **[measured]**. The chart and numbers above are the latest run.")
     verdict = "HELD" if held else "NOT HELD"
     slope = next(iter(cmp.values()))
     key = (f"Coral {money_delta(slope['measured_slope'])} vs discounted "
            f"{money_delta(slope['alt_slope'])} per turn per +100K context")
+    if savings:
+        key += (f"; 10m TTL saves {min(savings):.0%}-{max(savings):.0%} "
+                f"({len(savings)} run{'s' if len(savings) > 1 else ''})")
     return lines, ("H1 flat cost per turn", verdict, key)
 
 
@@ -221,13 +261,30 @@ def section_h2c(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]
                    "one edit = one full re-write, then recovery")
 
 
-def section_h2a(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
-    checks = summarize_idle(ok_rows(next(iter(by_variant(path).values()))))
-    fig, (ax,) = new_fig()
-    names = [f"{c['probe']} @ {c['check_min']} min" for c in checks]
+def _idle_family(probe: str) -> str:
+    return probe.rsplit("_", 1)[0] if probe else ""
+
+
+def section_h2a(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str, str]]:
+    rows = [r for p in paths for rr in by_variant(p).values() for r in ok_rows(rr)]
+    checks = summarize_idle(rows)
+    checks.sort(key=lambda c: (_idle_family(c["probe"]), c["check_min"] or 0))
+    writes: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        tags = r.get("tags") or {}
+        if tags.get("phase") == "write":
+            writes[_idle_family(tags.get("probe"))].append(r["cost_usd"])
+    fig = Figure(figsize=(7.2, max(3.8, 0.28 * len(checks) + 1)), facecolor=SURFACE)
+    ax = fig.add_subplot(1, 1, 1)
+    ax.set_facecolor(SURFACE)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.tick_params(colors=INK2, labelsize=8)
+    names = [f"{_idle_family(c['probe'])} @ {c['check_min']} min" for c in checks]
     values = [(c["cached_share"] or 0) * 100 for c in checks]
-    ax.barh(names, values, color=[STATUS[c["verdict"]] for c in checks], height=0.6)
-    for y, (v, c) in enumerate(zip(values, checks, strict=True)):
+    shown = [max(v, 1.5) for v in values]   # a 0% MISS still gets a visible red sliver
+    ax.barh(names, shown, color=[STATUS[c["verdict"]] for c in checks], height=0.6)
+    for y, (v, c) in enumerate(zip(shown, checks, strict=True)):
         ax.annotate(c["verdict"], (v, y), xytext=(4, 0), textcoords="offset points",
                     va="center", fontsize=8, color=INK2)
     ax.invert_yaxis()
@@ -237,20 +294,51 @@ def section_h2a(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]
     label(ax, "H2(a): still cached after an idle gap?", "% of prompt cached on re-send", "")
     chart = save(fig, out, "h2a_idle_gaps.png")
 
-    verdicts = {f"{c['probe']}@{c['check_min']}": c["verdict"] for c in checks}
     lines = [f"![H2a chart]({chart})", "",
              "| probe | after | cached | verdict | re-send cost |", "|---|---|---|---|---|"]
     for c in checks:
         lines.append(f"| {c['probe']} | {c['check_min']} min | {(c['cached_share'] or 0):.1%} | "
                      f"{c['verdict']} | ${c['cost']:.6f} |")
     lines.append("")
-    lines.append("- One check per probe: first observations, not proof **[measured]**. "
-                 "A miss could also be early eviction, which we can't see from outside.")
-    short_hit = verdicts.get("ttl10m_12m@12") == "HIT"
-    long_miss = verdicts.get("default_35m@35") == "MISS"
-    verdict = ("NOT HELD at 12 min / HELD at 35 min" if short_hit and long_miss else "SEE TABLE")
-    return lines, ("H2(a) idle gap longer than TTL", verdict,
-                   "10m block still cached at 12 min; default and '60m' gone by 35 min")
+    lines.append("- One check per probe and time, across "
+                 f"{len(paths)} run{'s' if len(paths) > 1 else ''}: observations, not proof "
+                 "**[measured]**. A miss could also be early eviction, which we can't see from "
+                 "outside.")
+    if writes:
+        lines.append("- Cost to write the ~10K-token prompt, by setting: " + ", ".join(
+            f"`{k}` ${sum(v) / len(v):.6f}" for k, v in sorted(writes.items())) +
+            " **[measured]**.")
+
+    def last_hit(family: str) -> int | None:
+        mins = [c["check_min"] for c in checks
+                if _idle_family(c["probe"]) == family and c["verdict"] == "HIT"]
+        return max(mins) if mins else None
+
+    def first_miss(family: str) -> int | None:
+        mins = [c["check_min"] for c in checks
+                if _idle_family(c["probe"]) == family and c["verdict"] == "MISS"]
+        return min(mins) if mins else None
+
+    hit10, miss_default = last_hit("ttl10m"), first_miss("default")
+    misses = [c for c in checks if c["verdict"] == "MISS"]
+    if hit10 and hit10 > 10:
+        if misses:
+            earliest = min(c["check_min"] for c in misses)
+            missed = sorted({_idle_family(c["probe"]) for c in misses
+                             if c["check_min"] == earliest})
+            who = [f"`{m}`" for m in missed]
+            who_txt = who[0] if len(who) == 1 else ", ".join(who[:-1]) + " and " + who[-1]
+            tail = f"no check missed before {earliest} min, when {who_txt} missed"
+        else:
+            tail = "no check missed at all"
+        lines.append(f"- A `ttl: \"10m\"` block was still cached after {hit10} min; {tail} "
+                     "**[measured]**. So the TTL changed what we paid, not how long the cache "
+                     "lived in these runs **[inference]**.")
+    verdict = "NOT HELD" if hit10 and hit10 > 10 else "SEE TABLE"
+    key = (f"10m block still cached at {hit10} min" if hit10 else "see table")
+    if miss_default:
+        key += f"; default gone at {miss_default} min"
+    return lines, ("H2(a) idle gap longer than TTL", verdict, key)
 
 
 def section_h2b(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
@@ -279,8 +367,8 @@ def section_h2b(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]
                    f"warm shared prefix {warm:.0%} cached vs distinct {distinct or 0:.0%}")
 
 
-def section_h3(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
-    rows = ok_rows(next(iter(by_variant(path).values())))
+def section_h3(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str, str]]:
+    rows = ok_rows([r for rr in pooled_by_variant(paths).values() for r in rr])
     table = summarize_long_context(rows)
     fig, (ax,) = new_fig()
     for i, phase in enumerate(("cold", "warm", "warm+append")):
@@ -307,14 +395,18 @@ def section_h3(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
             lines.append(f"| {size // 1000}K | {cold['ttft_p50']:.2f}s | "
                          f"{warm['ttft_p50']:.2f}s | {ratios[-1]:.1f}x | {appended:.2f}s | "
                          f"{cold['n']} |")
-    lines += ["", ("- Measured with n=3 per size: enough for the 2-9x effect, not for p95/p99 "
-              "**[measured]**.")]
+    n_min = min((g["n"] for g in table), default=0)
+    lines += ["", (f"- Pooled over {len(paths)} run{'s' if len(paths) > 1 else ''}, n={n_min} "
+              "per size and phase: enough for the effect, not for p95/p99 **[measured]**."),
+              ("- Cold TTFT was steady run to run; warm TTFT was noisier, so the exact speed-up "
+               "moves between runs **[measured]**.")]
     held = bool(ratios) and min(ratios) > 1.5
     return lines, ("H3 warm cache cuts TTFT at long context", "HELD" if held else "NOT HELD",
                    " / ".join(f"{r:.1f}x" for r in ratios) + " faster warm vs cold")
 
 
-def section_h4(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
+def section_h4(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str, str]]:
+    path = paths[-1]
     groups = by_variant(path)
     summaries = {n: summarize_api_compare(rows) for n, rows in groups.items()}
     fig, axes = new_fig(2)
@@ -349,21 +441,51 @@ def section_h4(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
         size = chat["request_chars_last"] / resp["request_chars_last"]
         cost = resp["total_cost"] / chat["total_cost"]
         speed = resp["total_p50"] / chat["total_p50"]
-        lines += ["", (f"- Responses sent {size:.0f}x less data on the last turn and was "
-                  f"{'faster' if speed < 1 else 'slower'} (total p50 {resp['total_p50']:.2f}s vs "
-                  f"{chat['total_p50']:.2f}s, n={chat['requests']} per variant: suggestive only) "
-                  f"**[measured]**."),
-                  (f"- But it cost {cost:.1f}x more: Responses billed writes at "
+        del speed
+        per_run = [by_variant(p) for p in paths]
+        ratios = [summarize_api_compare(g["responses_ttl10m"])["total_cost"]
+                  / summarize_api_compare(g["chat_ttl10m"])["total_cost"]
+                  for g in per_run if "chat_ttl10m" in g and "responses_ttl10m" in g]
+        pooled = pooled_by_variant(paths)
+
+        def first(name: str, q: float) -> float | None:
+            return percentile([r.get("first_content_s") if r.get("first_content_s") is not None
+                               else r.get("total_s") for r in ok_rows(pooled.get(name, []))], q)
+
+        n_each = len(ok_rows(pooled.get("chat_ttl10m", [])))
+        lines += ["", (f"- The table above is the latest run. Pooled over {len(paths)} runs "
+                  f"(n={n_each} per variant), first answer p50 / p95: Responses "
+                  f"{first('responses_ttl10m', 50):.2f}s / {first('responses_ttl10m', 95):.2f}s vs "
+                  f"Chat {first('chat_ttl10m', 50):.2f}s / {first('chat_ttl10m', 95):.2f}s "
+                  "**[measured]**. Chat always ran first in each run, so part of the gap may be "
+                  "warm-up **[inference]**."),
+                  (f"- Responses sent {size:.0f}x less data on the last turn **[measured]**."),
+                  (f"- Responses cost more in every run: {span(ratios, '.2f')}x Chat "
+                   "**[measured]**." if ratios else None)]
+        once = []
+        for g in per_run:
+            t2 = [r for r in ok_rows(g.get("responses_ttl10m_instr_once", []))
+                  if r.get("turn") == 2]
+            if t2:
+                once.append(hit_rate(t2[0]) or 0)
+        if once:
+            broke = sum(1 for x in once if x < 0.1)
+            lines.append(f"- Instructions sent only on turn 1: turn 2's cache broke in {broke} of "
+                         f"{len(once)} runs (cached share per run: {span(once)}) **[measured]**. "
+                         "Inconsistent, so it's a question for Coral, not a conclusion.")
+        lines += [(f"- Why it costs more: Responses billed writes at "
                   f"${resp['write_rate_per_m']:.4f}/M despite `ttl: \"10m\"` (Chat: "
                   f"${chat['write_rate_per_m']:.4f}/M) **[measured]**. Coral's docs say cache "
                   f"options apply to both APIs **[docs]**.")]
         verdict = "MIXED" if size > 2 and cost > 1 else ("HELD" if size > 2 else "NOT HELD")
-        key = f"{size:.0f}x smaller requests, but {cost:.1f}x the cost (TTL ignored)"
+        rng = (f"{min(ratios):.1f}-{max(ratios):.1f}x" if len(ratios) > 1 else f"{cost:.1f}x")
+        key = (f"{size:.0f}x smaller requests, but {rng} the cost in {len(ratios) or 1} "
+               "run(s) (TTL ignored)")
     return lines, ("H4 Responses vs Chat", verdict, key)
 
 
-def section_h5(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
-    groups = by_variant(path)
+def section_h5(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str, str]]:
+    groups = pooled_by_variant(paths)
     tables = {n: summarize_concurrency(rows) for n, rows in groups.items()}
     fig, axes = new_fig(2)
     for i, (name, table) in enumerate(tables.items()):
@@ -409,9 +531,11 @@ def section_h5(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
                      (r["completion_tokens"] / (r["last_token_s"] - r["ttft_s"])
                       for r in ok_rows(groups.get("deepseek_flash", []))
                       if (r.get("tags") or {}).get("level") == 1 and r.get("last_token_s")))
-    lines += ["", "- With few samples, p99 is effectively the slowest request.",
-              f"- DeepSeek single-stream samples: {singles} tok/s vs the advertised 'up to 469' "
-              f"**[measured] / [docs]**." if singles else ""]
+    lines += ["", (f"- Pooled over {len(paths)} run{'s' if len(paths) > 1 else ''}. With few "
+              "samples, p99 is effectively the slowest request."),
+              (f"- DeepSeek single stream: p50 {percentile(singles, 50):.0f} tok/s, range "
+               f"{singles[0]}-{singles[-1]} (n={len(singles)}) vs the advertised 'up to 469' "
+               "**[measured] / [docs]**.") if singles else None]
     return lines, ("H5 per-stream speed drops under concurrency",
                    "HELD" if held_any else "NOT HELD", "; ".join(key))
 
@@ -429,28 +553,36 @@ def date_range(paths: list[Path]) -> str:
 
 def build(results_dir: Path, out: Path) -> Path:
     out.mkdir(parents=True, exist_ok=True)
-    runs = {name: latest_run(results_dir, name) for name in SCENARIOS}
-    used = [p for p in runs.values() if p]
+    runs = {name: all_runs(results_dir, name) for name in SCENARIOS}
+    pooled = {"sequential", "long_context", "api_compare", "concurrency"}
+    for name in SCENARIOS:          # single-run scenarios: latest run only
+        if name not in pooled and name not in ("idle_gaps", "idle_followup"):
+            runs[name] = runs[name][-1:]
+    runs["idle"] = runs.pop("idle_gaps") + runs.pop("idle_followup")
+    used = sorted({p for ps in runs.values() for p in ps})
     all_logs = sorted(results_dir.glob("*.jsonl"))
     check = validate(all_logs)
 
     sections: list[tuple[str, list[str]]] = []
     board: list[tuple[str, str, str]] = []
     plan = [("H1: flat cost per turn", "sequential", section_h1),
-            ("H2: cache reuse in a plain loop", "sequential", lambda p, o: section_h2_loop(p)),
-            ("H2(a): idle gaps", "idle_gaps", section_h2a),
-            ("H2(b): fan-out", "fanout", section_h2b),
-            ("H2(c): early edit and the timestamp bug", "early_edit", section_h2c),
+            ("H2: cache reuse in a plain loop", "sequential",
+             lambda ps, o: section_h2_loop(ps[-1])),
+            ("H2(a): idle gaps", "idle", section_h2a),
+            ("H2(b): fan-out", "fanout", lambda ps, o: section_h2b(ps[-1], o)),
+            ("H2(c): early edit and the timestamp bug", "early_edit",
+             lambda ps, o: section_h2c(ps[-1], o)),
             ("H3: warm vs cold at long context", "long_context", section_h3),
             ("H4: Responses vs Chat Completions", "api_compare", section_h4),
             ("H5: speed under concurrency", "concurrency", section_h5)]
     for title, scenario, fn in plan:
-        path = runs.get(scenario)
-        if path is None:
+        paths = runs.get(scenario) or []
+        if not paths:
             sections.append((title, ["_Not run yet._"]))
             continue
-        lines, row = fn(path, out)
-        sections.append((title, [*lines, "", f"_Source: `{path.name}`_"]))
+        lines, row = fn(paths, out)
+        src = ", ".join(f"`{p.name}`" for p in paths)
+        sections.append((title, [*lines, "", f"_Source: {src}_"]))
         board.append(row)
 
     md = ["# AgentLoad results", "",
@@ -474,7 +606,10 @@ def build(results_dir: Path, out: Path) -> Path:
            ("- Outside-in testing: we can't see Coral's infrastructure. Results reflect their "
            "production service on the test dates above and may change."),
            ("- One student, a self-imposed $5 total budget, at most 8 parallel streams, no "
-           "stress testing. Many results rest on 1-3 samples per setting."),
+           "stress testing. Repeated runs: " + ", ".join(
+               f"{k} x{len(runs[k])}" for k in ("sequential", "long_context", "api_compare",
+                                                "concurrency") if runs.get(k)) +
+           "; fan-out, early edit and each idle check are single observations."),
            ("- The discounted-reads comparison is modeled on Coral's own base prices; it does "
            "not name or quote any other provider."),
            "- Out of scope: answer quality of 4-bit models vs full precision (open question).",

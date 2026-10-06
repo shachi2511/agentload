@@ -43,3 +43,24 @@ def test_money_delta_formatting():
     assert report.money_delta(-0.000004) == "~$0"
     assert report.money_delta(0.00147) == "+$0.0015"
     assert report.money_delta(None) == "-"
+
+
+def test_repeat_runs_are_pooled(tmp_path):
+    results, out = tmp_path / "results", tmp_path / "out"
+    results.mkdir()
+    write_sequential(results)
+    first = results / "20261005-225939-sequential-abc123.jsonl"
+    (results / "20261006-015350-sequential-def456.jsonl").write_text(first.read_text())
+    md = report.build(results, out).read_text()
+    assert "Repeated 2 times: the 10m TTL saved" in md
+    assert "sequential x2" in md
+
+
+def test_pooled_rounds_stay_separate(tmp_path):
+    rows = [{"turn": 1, "tags": {"variant": "v", "round": 0}}]
+    a = tmp_path / "20261006-000001-concurrency-a.jsonl"
+    b = tmp_path / "20261006-000002-concurrency-b.jsonl"
+    for path in (a, b):
+        path.write_text(json.dumps(rows[0]) + "\n")
+    pooled = report.pooled_by_variant([a, b])["v"]
+    assert len({r["tags"]["round"] for r in pooled}) == 2
