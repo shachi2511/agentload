@@ -13,8 +13,9 @@ most of every prompt is being written to the cache again.
 ## Why it matters (measured in this project, Oct 2026, GLM 5.3 Flash)
 
 - A timestamp in the system prompt broke the cache on every turn: cost per turn grew linearly
-  with the conversation instead of staying flat; a 20-turn run cost **7.8x** the healthy control,
-  a 15-turn demo **6.7x**; time to first token rose from ~0.3s to ~1.8s.
+  with the conversation instead of staying flat. A 20-turn run cost **7.8x** the healthy control,
+  and two 15-turn demos **6.2x** and **6.7x**. In the 20-turn run, time to first token p50 went
+  from 0.69s to 1.11s.
 - Nothing errors. Replies look normal. Without this alert the only signal is the bill.
 
 ## Confirm it (2 minutes)
@@ -44,9 +45,9 @@ most of every prompt is being written to the cache again.
 | Cause | How to check | Fix |
 |---|---|---|
 | A changing value early in the prompt (timestamp, request id, random tool order) | Diff two consecutive prompts; look at the first ~100 tokens | Move changing values to the end of the prompt, or remove them |
-| Responses API without `instructions` on every turn | Turn 2 cached 0; later turns lag one turn behind | Send the same `instructions` with every `previous_response_id` call |
+| Responses API without `instructions` on every turn | Turn 2 cached ~0 (seen in 2 of 4 runs, not every time) | Send the same `instructions` with every `previous_response_id` call |
 | History rewritten every turn (summaries, edits near the start) | Many dips, not one | Append instead of rewriting; edit late in the prompt |
-| Idle gap longer than the cache retention | Gap before the drop; first turn after the gap cached 0 | Expected; consider a longer `prompt_cache_options.ttl` (observed: default and "60m" both gone by 35 min) |
+| Idle gap longer than the cache retention | Gap before the drop; first turn after the gap cached 0 | Expected after long pauses. Observed: every setting, including a 10m TTL, was still cached at 30 min; default and "60m" were gone at 35 min |
 | Provider-side eviction or incident | **All** scenarios drop at the same moment, with no client change | Collect request ids, timestamps and cached counts; report to the provider |
 
 Not a cause: a single early edit. It costs one full re-write, then reuse recovers on the next

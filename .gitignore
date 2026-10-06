@@ -3,8 +3,8 @@ __pycache__/
 *.pyc
 .env
 .env.*
-results/*
-!results/.gitkeep
+results/spend_ledger.json
+results/*.tmp
 .pytest_cache/
 .ruff_cache/
 .DS_Store

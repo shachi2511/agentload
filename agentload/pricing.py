@@ -2,7 +2,7 @@
 
 GLM 5.3 Flash cache-write ($0.23, default retention) and output ($0.50) measured in Phase 1;
 DeepSeek V4.1 Flash output ($1.20) measured in Phase 3.7. Other rates come from Coral's docs
-as recorded in the project notes. Re-check before citing. Phase 4 extends this module.
+(coralbricks.ai/docs, checked Oct 2026). Re-check before citing.
 """
 from __future__ import annotations
 

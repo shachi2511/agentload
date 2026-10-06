@@ -68,6 +68,15 @@ def pooled_by_variant(paths: list[Path]) -> dict[str, list[Row]]:
     return dict(groups)
 
 
+def rolling(values: list[float], window: int = 5) -> list[float]:
+    """Trailing moving average (shorter window at the start)."""
+    out = []
+    for i in range(len(values)):
+        chunk = values[max(0, i - window + 1): i + 1]
+        out.append(sum(chunk) / len(chunk))
+    return out
+
+
 def span(values: list[float], fmt: str = ".0%") -> str:
     """'61% / 63% / 62%' style list of per-run values."""
     return " / ".join(f"{v:{fmt}}" for v in values)
@@ -147,22 +156,29 @@ def section_h1(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
     for i, name in enumerate([n for n in ("default", "ttl10m") if n in groups]):
         rows = ok_rows(groups[name])
         xs, ys = [r["turn"] for r in rows], [r["cost_usd"] * 1000 for r in rows]
-        ax.plot(xs, ys, color=SERIES[i], linewidth=2, label=f"Coral {name} (measured)")
-        end_label(ax, xs[-1], ys[-1], f"Coral {name}")
+        ax.plot(xs, ys, color=SERIES[i], linewidth=1, alpha=0.3)
+        avg = rolling(ys)
+        ax.plot(xs, avg, color=SERIES[i], linewidth=2.2, label=f"Coral {name} (measured)")
+        end_label(ax, xs[-1], avg[-1], f"Coral {name}")
     if "default" in groups:
         rows = ok_rows(groups["default"])
         xs = [r["turn"] for r in rows]
         ys = [(discount_cost(r) or 0) * 1000 for r in rows]
-        ax.plot(xs, ys, color=SERIES[2], linewidth=2, linestyle="--",
+        ax.plot(xs, ys, color=SERIES[2], linewidth=1, alpha=0.3, linestyle="--")
+        avg = rolling(ys)
+        ax.plot(xs, avg, color=SERIES[2], linewidth=2.2, linestyle="--",
                 label="discounted-reads rule, same tokens (modeled)")
-        end_label(ax, xs[-1], ys[-1], "discounted reads")
+        end_label(ax, xs[-1], avg[-1], "discounted reads")
     integer_x(ax)
-    label(ax, "H1: cost per turn as the conversation grows", "turn", "cost per turn ($ x 1,000)")
+    label(ax, "H1: cost per turn as the conversation grows (latest run)",
+          "turn  (thin = each turn, thick = 5-turn average)", "cost per turn ($ x 1,000)")
     legend(ax)
     chart = save(fig, out, "h1_cost_per_turn.png")
 
     held = True
-    lines = [f"![H1 chart]({chart})", ""]
+    lines = [f"![H1 chart]({chart})", "",
+             ("- Tool outputs alternate between ~1K and ~3K tokens, so cost zigzags turn to "
+              "turn; the thick lines are 5-turn averages."), ""]
     for name, s in cmp.items():
         held = held and s["alt_slope"] > 0 and abs(s["measured_slope"]) < 0.1 * s["alt_slope"]
         lines.append(
@@ -195,18 +211,28 @@ def section_h1(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
     return lines, ("H1 flat cost per turn", verdict, key)
 
 
-def section_h2_loop(path: Path) -> tuple[list[str], tuple[str, str, str]]:
-    rows = ok_rows(by_variant(path).get("default", []))
-    s = summarize(rows)
-    hits = [hit_rate(r) for r in rows[1:]]
-    hit_min = min(h for h in hits if h is not None)
-    held = (s["reuse_mean"] or 0) >= 0.9
-    lines = [(f"- Plain {len(rows)}-turn loop: cache reuse mean {s['reuse_mean']:.1%}, "
-             f"min {s['reuse_min']:.1%} **[measured]**. Raw hit rate (cached ÷ prompt) dipped "
-             f"to {hit_min:.1%} even though the cache was working: it mostly reflects how long "
-             f"the conversation is **[inference]**.")]
+def section_h2_loop(paths: list[Path]) -> tuple[list[str], tuple[str, str, str]]:
+    means, mins, hit_mins, turns = [], [], [], 0
+    for path in paths:
+        for name in ("default", "ttl10m"):
+            rows = ok_rows(by_variant(path).get(name, []))
+            if not rows:
+                continue
+            s = summarize(rows)
+            means.append(s["reuse_mean"] or 0)
+            mins.append(s["reuse_min"] or 0)
+            hit_mins.append(min(h for h in (hit_rate(r) for r in rows[1:]) if h is not None))
+            turns = len(rows)
+    held = bool(means) and min(means) >= 0.9
+    lines = [(f"- Plain {turns}-turn loop, {len(means)} conversations across {len(paths)} "
+              f"run(s) (default and ttl10m): cache reuse mean {min(means):.1%}-{max(means):.1%}, "
+              f"lowest single turn {min(mins):.1%} **[measured]**."),
+             (f"- Raw hit rate (cached ÷ prompt) dipped to {min(hit_mins):.1%} even though the "
+              "cache was working: it mostly reflects how long the conversation is "
+              "**[inference]**.")]
     return lines, ("H2 plain loop keeps the cache", "HELD" if held else "NOT HELD",
-                   f"reuse {s['reuse_mean']:.1%} mean (raw hit rate as low as {hit_min:.0%})")
+                   (f"reuse {min(means):.1%}+ mean in {len(means)} conversations (raw hit "
+                    f"rate as low as {min(hit_mins):.0%})"))
 
 
 def section_h2c(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]:
@@ -254,8 +280,8 @@ def section_h2c(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]
         ts = summarize(ok_rows(groups["system_timestamp"]))
         ctl = summarize(ok_rows(groups["control"]))
         lines.append(f"- Timestamp in the system prompt (a common agent bug): reuse mean "
-                     f"{ts['reuse_mean']:.1%}; cost per turn {ts['mean_cost_first10']:.6f} → "
-                     f"{ts['mean_cost_last10']:.6f} (growing); whole run "
+                     f"{ts['reuse_mean']:.1%}; cost per turn ${ts['mean_cost_first10']:.6f} → "
+                     f"${ts['mean_cost_last10']:.6f} (growing); whole run "
                      f"{ts['total_cost'] / ctl['total_cost']:.1f}x the control **[measured]**.")
     return lines, ("H2(c) early edit breaks the prefix", "HELD" if held else "NOT HELD",
                    "one edit = one full re-write, then recovery")
@@ -354,7 +380,11 @@ def section_h2b(path: Path, out: Path) -> tuple[list[str], tuple[str, str, str]]
     ax.set_ylim(0, 110)
     label(ax, "H2(b): sub-agents' first call, share cached and cost", "", "% cached")
     chart = save(fig, out, "h2b_fanout.png")
-    lines = [f"![H2b chart]({chart})", ""]
+    lines = [f"![H2b chart]({chart})", "",
+             ("- Setup: a ~30K-token shared context handed to 4 parallel sub-agents, 3 turns "
+              "each. `shared_warm`: the main agent caches the context first. `shared_cold`: all "
+              "4 start at the same moment, nothing cached yet. `distinct`: each gets a different "
+              "prefix (control)."), ""]
     for n, s in summaries.items():
         lines.append(f"- `{n}`: sub-agent first call {s['child1_cached_share']:.1%} cached, "
                      f"${s['child1_cost_mean']:.6f} each, TTFT p50 {s['child1_ttft_p50']:.2f}s; "
@@ -379,7 +409,7 @@ def section_h3(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
         med = [(g["prompt_tokens"] / 1000, g["ttft_p50"]) for g in table if g["phase"] == phase]
         ax.plot([m[0] for m in med], [m[1] for m in med], color=SERIES[i], linewidth=2)
     label(ax, "H3: time to first token vs context size", "context (thousand tokens)",
-          "TTFT (s), dots = runs, line = median")
+          "TTFT (s), dots = requests, line = median")
     legend(ax)
     chart = save(fig, out, "h3_ttft_vs_context.png")
     p50 = {(g["size"], g["phase"]): g for g in table}
@@ -416,7 +446,7 @@ def section_h4(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
         axes[0].plot(xs, ys, color=SERIES[i], linewidth=2, label=name)
         end_label(axes[0], xs[-1], ys[-1], name.split("_")[0])
     integer_x(axes[0])
-    label(axes[0], "Characters sent per request", "turn", "thousand characters")
+    label(axes[0], "Characters sent per request (latest run)", "turn", "thousand characters")
     legend(axes[0])
     names = list(summaries)
     costs = [summaries[n]["total_cost"] * 1000 for n in names]
@@ -425,7 +455,7 @@ def section_h4(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
     for x, v in enumerate(costs):
         axes[1].annotate(f"${v / 1000:.5f}", (x, v), xytext=(0, 4), textcoords="offset points",
                          ha="center", fontsize=8, color=INK2)
-    label(axes[1], "Total cost of the same 12-turn loop", "", "$ x 1,000")
+    label(axes[1], "Total cost of the same 12-turn loop (latest run)", "", "$ x 1,000")
     chart = save(fig, out, "h4_chat_vs_responses.png")
     lines = [f"![H4 chart]({chart})", "",
              ("| variant | total $ | write $/M | sent chars (last turn) | reuse mean/min | "
@@ -480,7 +510,7 @@ def section_h4(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
         verdict = "MIXED" if size > 2 and cost > 1 else ("HELD" if size > 2 else "NOT HELD")
         rng = (f"{min(ratios):.1f}-{max(ratios):.1f}x" if len(ratios) > 1 else f"{cost:.1f}x")
         key = (f"{size:.0f}x smaller requests, but {rng} the cost in {len(ratios) or 1} "
-               "run(s) (TTL ignored)")
+               "run(s) (writes billed as 3 blocks even with a 10m TTL)")
     return lines, ("H4 Responses vs Chat", verdict, key)
 
 
@@ -498,7 +528,7 @@ def section_h5(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
         ax.set_xticks([1, 2, 4, 8])
         ax.set_ylim(bottom=0)
     label(axes[0], "Speed of each stream (p50)", "parallel streams", "tokens/s per stream")
-    label(axes[1], "Total speed across streams", "parallel streams", "tokens/s total")
+    label(axes[1], "Total output per second (wall clock)", "parallel streams", "tokens/s total")
     legend(axes[0])
     chart = save(fig, out, "h5_tps_vs_concurrency.png")
 
@@ -531,11 +561,24 @@ def section_h5(paths: list[Path], out: Path) -> tuple[list[str], tuple[str, str,
                      (r["completion_tokens"] / (r["last_token_s"] - r["ttft_s"])
                       for r in ok_rows(groups.get("deepseek_flash", []))
                       if (r.get("tags") or {}).get("level") == 1 and r.get("last_token_s")))
+    glm1 = sorted(round(x) for x in
+                  (r["completion_tokens"] / (r["last_token_s"] - r["ttft_s"])
+                   for r in ok_rows(groups.get("glm_flash", []))
+                   if (r.get("tags") or {}).get("level") == 1 and r.get("last_token_s")))
     lines += ["", (f"- Pooled over {len(paths)} run{'s' if len(paths) > 1 else ''}. With few "
               "samples, p99 is effectively the slowest request."),
-              (f"- DeepSeek single stream: p50 {percentile(singles, 50):.0f} tok/s, range "
-               f"{singles[0]}-{singles[-1]} (n={len(singles)}) vs the advertised 'up to 469' "
-               "**[measured] / [docs]**.") if singles else None]
+              ("- Per-stream speed is measured from first to last token. Total output per "
+               "second uses wall-clock time per round, including the wait for the first token, "
+               "so at 1 stream it is lower than the per-stream speed."),
+              ("- Coral's homepage: \"GLM 5.3 and DeepSeek V4.1 at up to 469 output tokens per "
+               "second\" **[docs]**.")]
+    if singles:
+        lines.append(f"- Single stream, DeepSeek V4.1 Flash: p50 {percentile(singles, 50):.0f} "
+                     f"tok/s, range {singles[0]}-{singles[-1]} (n={len(singles)}) "
+                     "**[measured]**.")
+    if glm1:
+        lines.append(f"- Single stream, GLM 5.3 Flash: p50 {percentile(glm1, 50):.0f} tok/s, "
+                     f"range {glm1[0]}-{glm1[-1]} (n={len(glm1)}) **[measured]**.")
     return lines, ("H5 per-stream speed drops under concurrency",
                    "HELD" if held_any else "NOT HELD", "; ".join(key))
 
@@ -567,7 +610,7 @@ def build(results_dir: Path, out: Path) -> Path:
     board: list[tuple[str, str, str]] = []
     plan = [("H1: flat cost per turn", "sequential", section_h1),
             ("H2: cache reuse in a plain loop", "sequential",
-             lambda ps, o: section_h2_loop(ps[-1])),
+             lambda ps, o: section_h2_loop(ps)),
             ("H2(a): idle gaps", "idle", section_h2a),
             ("H2(b): fan-out", "fanout", lambda ps, o: section_h2b(ps[-1], o)),
             ("H2(c): early edit and the timestamp bug", "early_edit",

@@ -1,6 +1,6 @@
 # AgentLoad results
 
-Generated 2026-10-06 02:38 from the JSONL logs. Test dates: 2026-10-05 to 2026-10-06. Every number below is computed from the logs.
+Generated 2026-10-06 02:57 from the JSONL logs. Test dates: 2026-10-05 to 2026-10-06. Every number below is computed from the logs.
 
 Labels: **[measured]** our own runs · **[modeled]** real token counts re-priced under a hypothetical rule · **[docs]** Coral's documentation · **[inference]** our reading of the data.
 
@@ -13,17 +13,19 @@ Our model of Coral's billing reproduced **1054 of 1054** logged charges (worst d
 | hypothesis | verdict | key number |
 |---|---|---|
 | H1 flat cost per turn | **HELD** | Coral ~$0 vs discounted +$0.0015 per turn per +100K context; 10m TTL saves 61%-63% (3 runs) |
-| H2 plain loop keeps the cache | **HELD** | reuse 99.9% mean (raw hit rate as low as 56%) |
+| H2 plain loop keeps the cache | **HELD** | reuse 99.9%+ mean in 6 conversations (raw hit rate as low as 55%) |
 | H2(a) idle gap longer than TTL | **NOT HELD** | 10m block still cached at 30 min; default gone at 35 min |
 | H2(b) fan-out with shared vs different prefixes | **HELD** | warm shared prefix 91% cached vs distinct 0% |
 | H2(c) early edit breaks the prefix | **HELD** | one edit = one full re-write, then recovery |
 | H3 warm cache cuts TTFT at long context | **HELD** | 3.3x / 5.7x / 7.7x faster warm vs cold |
-| H4 Responses vs Chat | **MIXED** | 15x smaller requests, but 2.4-2.6x the cost in 4 run(s) (TTL ignored) |
+| H4 Responses vs Chat | **MIXED** | 15x smaller requests, but 2.4-2.6x the cost in 4 run(s) (writes billed as 3 blocks even with a 10m TTL) |
 | H5 per-stream speed drops under concurrency | **HELD** | glm_flash 284→188 tok/s; deepseek_flash 408→258 tok/s |
 
 ## H1: flat cost per turn
 
 ![H1 chart](h1_cost_per_turn.png)
+
+- Tool outputs alternate between ~1K and ~3K tokens, so cost zigzags turn to turn; the thick lines are 5-turn averages.
 
 - `default`: context 2,987 → 128,119 tokens. Coral cost per turn, first 10 → last 10: $0.000585 → $0.000578 **[measured]**. Discounted-reads rule on the same tokens: $0.000700 → $0.002186 **[modeled]**. Cost added per +100K tokens of context: Coral +$0.000002, discounted +$0.001497. Whole run: $0.03096 vs $0.07242 (2.3x).
 - `ttl10m`: context 2,990 → 128,639 tokens. Coral cost per turn, first 10 → last 10: $0.000229 → $0.000210 **[measured]**. Discounted-reads rule on the same tokens: $0.000718 → $0.002204 **[modeled]**. Cost added per +100K tokens of context: Coral -$0.000017, discounted +$0.001490. Whole run: $0.01162 vs $0.07319 (6.3x).
@@ -34,7 +36,8 @@ _Source: `20261005-225939-sequential-4382da.jsonl`, `20261006-015350-sequential-
 
 ## H2: cache reuse in a plain loop
 
-- Plain 50-turn loop: cache reuse mean 99.9%, min 98.6% **[measured]**. Raw hit rate (cached ÷ prompt) dipped to 55.8% even though the cache was working: it mostly reflects how long the conversation is **[inference]**.
+- Plain 50-turn loop, 6 conversations across 3 run(s) (default and ttl10m): cache reuse mean 99.9%-99.9%, lowest single turn 98.4% **[measured]**.
+- Raw hit rate (cached ÷ prompt) dipped to 55.5% even though the cache was working: it mostly reflects how long the conversation is **[inference]**.
 
 _Source: `20261005-225939-sequential-4382da.jsonl`, `20261006-015350-sequential-1cd41e.jsonl`, `20261006-015743-sequential-9f90c6.jsonl`_
 
@@ -73,6 +76,8 @@ _Source: `20261005-231533-idle_gaps-8d4480.jsonl`, `20261006-020322-idle_followu
 
 ![H2b chart](h2b_fanout.png)
 
+- Setup: a ~30K-token shared context handed to 4 parallel sub-agents, 3 turns each. `shared_warm`: the main agent caches the context first. `shared_cold`: all 4 start at the same moment, nothing cached yet. `distinct`: each gets a different prefix (control).
+
 - `shared_warm`: sub-agent first call 91.4% cached, $0.000324 each, TTFT p50 1.07s; later turns 93.7% cached **[measured]**.
 - `shared_cold`: sub-agent first call 59.8% cached, $0.001145 each, TTFT p50 2.05s; later turns 91.2% cached **[measured]**.
 - `distinct`: sub-agent first call 0.0% cached, $0.002620 each, TTFT p50 2.11s; later turns 94.1% cached **[measured]**.
@@ -84,7 +89,7 @@ _Source: `20261005-231221-fanout-642d3c.jsonl`_
 ![H2 chart](h2_cache_over_time.png)
 
 - Early edit at turn 11: reuse 0.0%, cost $0.002111 (~8x a normal turn); next turn reuse 99.8% **[measured]**.
-- Timestamp in the system prompt (a common agent bug): reuse mean 0.3%; cost per turn 0.001321 → 0.003025 (growing); whole run 7.8x the control **[measured]**.
+- Timestamp in the system prompt (a common agent bug): reuse mean 0.3%; cost per turn $0.001321 → $0.003025 (growing); whole run 7.8x the control **[measured]**.
 
 _Source: `20261005-235235-early_edit-195b1b.jsonl`_
 
@@ -140,7 +145,10 @@ _Source: `20261006-000442-api_compare-509331.jsonl`, `20261006-013415-api_compar
 | deepseek_flash | 8 | 72 | 258 (140) | 1322 | 3.4/5.1/5.6s | 0 |
 
 - Pooled over 3 runs. With few samples, p99 is effectively the slowest request.
-- DeepSeek single stream: p50 408 tok/s, range 291-608 (n=9) vs the advertised 'up to 469' **[measured] / [docs]**.
+- Per-stream speed is measured from first to last token. Total output per second uses wall-clock time per round, including the wait for the first token, so at 1 stream it is lower than the per-stream speed.
+- Coral's homepage: "GLM 5.3 and DeepSeek V4.1 at up to 469 output tokens per second" **[docs]**.
+- Single stream, DeepSeek V4.1 Flash: p50 408 tok/s, range 291-608 (n=9) **[measured]**.
+- Single stream, GLM 5.3 Flash: p50 284 tok/s, range 240-325 (n=9) **[measured]**.
 
 _Source: `20261005-235603-concurrency-959236.jsonl`, `20261006-014127-concurrency-696072.jsonl`, `20261006-014443-concurrency-e135cb.jsonl`_
 

@@ -252,7 +252,7 @@
       "id": 6,
       "type": "timeseries",
       "title": "Cache reuse (cached \u00f7 previous prompt, same conversation)",
-      "description": "Healthy is about 100%. Below 50% means the prefix cache is breaking (e.g. a timestamp in the system prompt). The Phase 7 alert watches this.",
+      "description": "Healthy is about 100%. Below 50% means the prefix cache is breaking (e.g. a timestamp in the system prompt). The cache-health alert (AgentLoadCacheReuseLow) watches this.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
