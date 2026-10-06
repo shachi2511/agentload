@@ -1,0 +1,16 @@
+name: dashboard_demo
+mode: sequential
+description: >
+  Phase 6.5 / 7 demo. 15 healthy turns, then 15 turns with the timestamp-in-system-prompt bug,
+  so cache reuse visibly drops from ~100% to ~0% on the live dashboard (~$0.02).
+model: glm-5.3-flash-fast
+turns: 15
+tool_tokens: [1000, 2000]
+max_tokens: 500
+budget_usd: 0.2
+variants:
+  - name: control
+    extra_body: {prompt_cache_options: {ttl: "10m"}}
+  - name: system_timestamp
+    system_timestamp: true
+    extra_body: {prompt_cache_options: {ttl: "10m"}}

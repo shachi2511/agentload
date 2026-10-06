@@ -1,0 +1,13 @@
+# Prometheus config for NATIVE runs (Homebrew, no Docker): AgentLoad is on localhost.
+# The Docker version is prometheus/prometheus.yml (target host.docker.internal).
+global:
+  scrape_interval: 5s       # ask AgentLoad for its numbers every 5 seconds
+  evaluation_interval: 5s   # check alert rules (Phase 7) every 5 seconds
+
+rule_files:
+  - ../alerts/*.yml         # relative to this file
+
+scrape_configs:
+  - job_name: agentload
+    static_configs:
+      - targets: ["localhost:9108"]   # AgentLoad's --metrics-port

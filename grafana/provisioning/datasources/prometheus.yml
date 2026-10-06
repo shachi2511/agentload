@@ -1,0 +1,10 @@
+# Grafana reads ${PROMETHEUS_URL} from the environment:
+#   native (scripts/obs_up.sh): http://localhost:9090    Docker Compose: http://prometheus:9090
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL}
+    isDefault: true

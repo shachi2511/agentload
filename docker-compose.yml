@@ -1,0 +1,37 @@
+# Phase 6: live dashboard stack.
+#   Prometheus stores AgentLoad's metrics over time (scrapes host.docker.internal:9108 every 5s).
+#   Grafana draws them. Both listen on 127.0.0.1 only: reachable from this Mac, not the network.
+# Start: docker compose up -d      Stop: docker compose down      Logs: docker compose logs -f
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.0   # same version verified natively (Phase 6.3)
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the container reach AgentLoad on the host
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3     # same version verified natively (Phase 6.3)
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # local-only: open dashboards without logging in
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      PROMETHEUS_URL: "http://prometheus:9090"
+      AGENTLOAD_DASHBOARDS: "/var/lib/grafana/dashboards"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -28,6 +28,7 @@ from agentload.analysis import (
 )
 from agentload.budget import BudgetExceeded, BudgetGuard
 from agentload.client import DEFAULT_MODEL, AgentLoadClient, RequestResult
+from agentload.exporter import Exporter, ExportingWriter
 from agentload.metrics import JsonlWriter, new_run_id
 from agentload.workload import ToolOutputGenerator, new_run_nonce, system_prompt
 
@@ -129,7 +130,8 @@ async def run_sequential(client: AgentLoadClient, writer: JsonlWriter, sc: Scena
         r = await client.chat(
             messages, model=sc.model, max_tokens=sc.max_tokens,
             scenario=f"{sc.name}/{variant.name}", turn=turn, extra_body=variant.extra_body,
-            tags={"variant": variant.name, "tool_tokens_target": size, "edited": edited},
+            tags={"variant": variant.name, "tool_tokens_target": size, "edited": edited,
+                  "conversation": f"{sc.name}/{variant.name}"},
         )
         writer.write(r)
         results.append(r)
@@ -264,7 +266,8 @@ async def run_fanout(client: AgentLoadClient, writer: JsonlWriter, sc: Scenario,
             task = gen.make(task_tokens, step=rep * 1000 + idx * 10 + t)
             msgs.append({"role": "user", "content": f"Sub-agent {idx}, step {t}:\n{task}"})
             r = await call(msgs, f"r{rep} child{idx} t{t}",
-                           {"phase": "child", "child": idx, "child_turn": t, "rep": rep})
+                           {"phase": "child", "child": idx, "child_turn": t, "rep": rep,
+                            "conversation": f"{variant.name}/r{rep}/c{idx}"})
             if r.error:
                 return
             msgs.append({"role": "assistant", "content": r.output_text})
@@ -437,7 +440,8 @@ async def run_api_compare(client: AgentLoadClient, writer: JsonlWriter, sc: Scen
             "model": sc.model, "max_tokens": sc.max_tokens,
             "scenario": f"{sc.name}/{variant.name}", "turn": turn,
             "extra_body": variant.extra_body,
-            "tags": {"variant": variant.name, "api": api, "tool_tokens_target": size},
+            "tags": {"variant": variant.name, "api": api, "tool_tokens_target": size,
+                     "conversation": f"{sc.name}/{variant.name}"},
         }
         if api == "chat":
             messages.append({"role": "user", "content": text})
@@ -496,11 +500,23 @@ MODES: dict[str, ModeSpec] = {
 }
 
 
-async def run_scenario(path: Path | str) -> None:
+async def run_scenario(path: Path | str, metrics_port: int | None = None,
+                       hold_s: float = 15.0, warmup_s: float = 6.0) -> None:
     sc = load_scenario(path)
     spec = MODES[sc.mode]
     run_id = new_run_id(sc.name)
-    writer = JsonlWriter(Path("results") / f"{run_id}.jsonl", run_id=run_id)
+    log_path = Path("results") / f"{run_id}.jsonl"
+    writer: JsonlWriter = JsonlWriter(log_path, run_id=run_id)
+    if metrics_port:
+        exporter = Exporter()
+        exporter.serve(metrics_port)
+        writer = ExportingWriter(log_path, run_id, exporter)
+        print(f"live metrics: http://localhost:{metrics_port}/metrics")
+        for v in sc.variants:
+            exporter.prepare(f"{sc.name}/{v.name}", v.params.get("model", sc.model),
+                             v.params.get("api", "chat"))
+        print(f"waiting {warmup_s:.0f}s so Prometheus scrapes the zeroed counters first...")
+        await asyncio.sleep(warmup_s)
     budget = BudgetGuard(run_cap_usd=sc.budget_usd)
     client = AgentLoadClient(budget)
     gen = ToolOutputGenerator()
@@ -518,13 +534,22 @@ async def run_scenario(path: Path | str) -> None:
     spec.summary(rows_by_variant)
     print(f"\nlog: {writer.path} | this run ${budget.run_spent:.4f} | "
           f"all-time ${budget.total_spent:.4f}")
+    if metrics_port:
+        print(f"keeping metrics up {hold_s:.0f}s so Prometheus gets a final scrape...")
+        await asyncio.sleep(hold_s)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run an AgentLoad scenario.")
     parser.add_argument("scenario", help="path to a scenario YAML file")
+    parser.add_argument("--metrics-port", type=int, default=None,
+                        help="serve live Prometheus metrics on this port (e.g. 9108)")
+    parser.add_argument("--hold-s", type=float, default=15.0,
+                        help="seconds to keep metrics up after the run")
+    parser.add_argument("--warmup-s", type=float, default=6.0,
+                        help="seconds to wait before the first request (one scrape)")
     args = parser.parse_args(argv)
-    asyncio.run(run_scenario(args.scenario))
+    asyncio.run(run_scenario(args.scenario, args.metrics_port, args.hold_s, args.warmup_s))
 
 
 if __name__ == "__main__":

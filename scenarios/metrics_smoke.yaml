@@ -1,0 +1,12 @@
+name: metrics_smoke
+mode: sequential
+description: >
+  Phase 6.2. A tiny 3-turn loop to check the live Prometheus metrics endpoint (~$0.001).
+model: glm-5.3-flash-fast
+turns: 3
+tool_tokens: [500, 800]
+max_tokens: 300
+budget_usd: 0.05
+variants:
+  - name: ttl10m
+    extra_body: {prompt_cache_options: {ttl: "10m"}}

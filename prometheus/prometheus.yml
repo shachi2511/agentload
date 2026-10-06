@@ -1,0 +1,12 @@
+# Prometheus config: what to scrape and how often.
+global:
+  scrape_interval: 5s       # ask AgentLoad for its numbers every 5 seconds
+  evaluation_interval: 5s   # check alert rules (Phase 7) every 5 seconds
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+  - job_name: agentload
+    static_configs:
+      - targets: ["host.docker.internal:9108"]   # AgentLoad's --metrics-port on this Mac

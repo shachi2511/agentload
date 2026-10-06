@@ -1,0 +1,8 @@
+# Dashboards are loaded from ${AGENTLOAD_DASHBOARDS} (the repo's dashboards/ folder).
+apiVersion: 1
+providers:
+  - name: agentload
+    folder: AgentLoad
+    type: file
+    options:
+      path: ${AGENTLOAD_DASHBOARDS}
