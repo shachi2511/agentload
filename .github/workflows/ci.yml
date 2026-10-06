@@ -106,13 +106,21 @@ jobs:
           python -m agentload.runner scenarios/ci_smoke.yaml \
             --metrics-port 9108 --warmup-s 6 --hold-s 15
       - name: Prometheus scraped the run
+        # After the run exits, Prometheus marks its series stale on the next scrape, so an
+        # instant query can come back empty. Look back over 5 minutes instead, and retry.
         run: |
-          curl -s 'localhost:9090/api/v1/query?query=sum(agentload_requests_total)' | python -c "
+          Q='sum(max_over_time(agentload_requests_total[5m]))'
+          for i in $(seq 1 10); do
+            curl -s --get localhost:9090/api/v1/query --data-urlencode "query=$Q" > scraped.json
+            if python -c "
           import json, sys
-          res = json.load(sys.stdin)['data']['result']
+          res = json.load(open('scraped.json'))['data']['result']
           print(res)
-          assert res and float(res[0]['value'][1]) >= 1, 'no requests scraped'
-          "
+          sys.exit(0 if res and float(res[0]['value'][1]) >= 1 else 1)
+          "; then exit 0; fi
+            sleep 3
+          done
+          echo "no AgentLoad requests found in Prometheus"; exit 1
       - name: Pricing check reproduces every fake charge
         run: python -m agentload.pricing_report validate --strict results/*.jsonl
       - name: Build the report
