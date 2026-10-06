@@ -9,3 +9,5 @@ results/*
 .ruff_cache/
 .DS_Store
 .observability/
+*.egg-info/
+build/
